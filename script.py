@@ -2,7 +2,7 @@ import os
 from PIL import Image
 from tqdm import tqdm
 
-def optimize_images(input_folder, output_folder, max_size=(1920, 540), quality=80):
+def optimize_images(input_folder, output_folder, max_size=(500, 500), quality=80):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
