@@ -8,7 +8,11 @@ import sys
 from PIL import Image, ImageOps, ImageSequence
 from tqdm import tqdm
 
-IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.jfif', '.tif', '.tiff', '.webp', '.bmp', '.gif')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_INPUT = os.path.join(BASE_DIR, 'input_folder')
+DEFAULT_OUTPUT = os.path.join(BASE_DIR, 'output_folder')
+
+IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.jfif', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.ico')
 VIDEO_EXTS = ('.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.mpg', '.mpeg', '.ts', '.mts', '.m2ts', '.vob', '.wmv', '.flv')
 
 IMAGE_FORMATS = {
@@ -18,7 +22,9 @@ IMAGE_FORMATS = {
     'tiff': 'TIFF',
     'bmp': 'BMP',
     'gif': 'GIF',
+    'ico': 'ICO',
 }
+ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)  # icon sizes stored in each .ico; 256 is the format's maximum
 VIDEO_FORMATS = ('mp4', 'webm', 'mov', 'mkv', 'gif')
 AUDIO_EXTS = ('.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.wma',
               '.aif', '.aiff', '.alac', '.amr', '.ape', '.wv')
@@ -27,7 +33,7 @@ LOSSY_AUDIO_FORMATS = ('mp3', 'm4a', 'opus')
 ANIMATED_FORMATS = ('GIF', 'WEBP', 'PNG')  # image formats Pillow can save with multiple frames
 
 LOSSLESS = 'lossless'  # special quality value: no added compression loss
-FIXED_QUALITY_FORMATS = ('png', 'tiff', 'bmp', 'gif', 'flac')  # the quality setting has no effect
+FIXED_QUALITY_FORMATS = ('png', 'tiff', 'bmp', 'gif', 'ico', 'flac')  # the quality setting has no effect
 
 
 # ---------- helpers ----------
@@ -144,6 +150,18 @@ def fit(img, ratio, size):
     return img
 
 
+def make_icon_square(img):
+    """Icons are square and at most 256px: shrink to fit, then centre on a transparent square."""
+    img = img.convert('RGBA')
+    img.thumbnail((ICO_SIZES[-1], ICO_SIZES[-1]), Image.Resampling.LANCZOS)
+    side = max(img.size)
+    if img.width == img.height:
+        return img
+    canvas = Image.new('RGBA', (side, side), (0, 0, 0, 0))
+    canvas.paste(img, ((side - img.width) // 2, (side - img.height) // 2))
+    return canvas
+
+
 def convert_animation(img, dst, pil_format, ratio, size, quality):
     """Crop/resize every frame of an animated image and save it as an animation."""
     frames, durations = [], []
@@ -209,6 +227,10 @@ def convert_image(src, dst, fmt, ratio=None, size=None, quality=80, keep_metadat
             save_args = {'optimize': True}
         elif pil_format == 'TIFF':
             save_args = {'compression': 'tiff_adobe_deflate'}
+        elif pil_format == 'ICO':
+            img = make_icon_square(img)
+            sizes = [(s, s) for s in ICO_SIZES if s <= img.width] or [img.size]
+            save_args = {'sizes': sizes}
 
         if pil_format in ('JPEG', 'WEBP', 'PNG', 'TIFF'):
             if exif:
@@ -380,6 +402,11 @@ def assign_output_names(jobs):
     return names
 
 
+def same_folder(a, b):
+    """True if both paths point at the same folder (case-insensitive on Windows, follows links)."""
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
 def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, ratio=None, size=None,
                    quality=80, keep_metadata=False, audio_fmt=None, split_audio_fmt=None, audio_only=False,
                    log=tqdm.write, progress=None, cancel=None):
@@ -397,6 +424,11 @@ def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, 
     audio_only = audio_only and bool(split_audio_fmt)
     if audio_only:
         video_fmt = None
+
+    if same_folder(input_folder, output_folder):
+        # Converting into the source folder can overwrite originals (photo.png -> photo.png)
+        raise RuntimeError("The output folder must be different from the input folder, "
+                           "or your original files could be overwritten.")
 
     os.makedirs(output_folder, exist_ok=True)
 
@@ -570,7 +602,8 @@ def interactive():
     image_fmt = video_fmt = audio_fmt = split_audio_fmt = None
     audio_only = False
     if media in ('image', 'both', 'all'):
-        image_fmt = choose("Output file type for images:", [(f.upper(), f) for f in IMAGE_FORMATS])
+        image_fmt = choose("Output file type for images:", [(f.upper(), f) for f in IMAGE_FORMATS],
+                           default=list(IMAGE_FORMATS).index('webp') + 1)
     if media in ('video', 'both', 'all'):
         sound = choose("Video sound:", [('Keep it in the video', 'keep'),
                                         ('Split it out: silent video + separate audio file', 'split'),
@@ -605,7 +638,7 @@ def interactive():
     keep_metadata = choose("Keep metadata (camera info, date, GPS location, audio tags)?",
                            [('No, strip it (smaller, more private)', False), ('Yes, keep it', True)])
 
-    return dict(input_folder='input_folder', output_folder='output_folder', image_fmt=image_fmt,
+    return dict(input_folder=DEFAULT_INPUT, output_folder=DEFAULT_OUTPUT, image_fmt=image_fmt,
                 video_fmt=video_fmt, audio_fmt=audio_fmt, ratio=ratio, size=size, quality=quality,
                 keep_metadata=keep_metadata, split_audio_fmt=split_audio_fmt, audio_only=audio_only)
 
@@ -625,13 +658,15 @@ def run():
     p = argparse.ArgumentParser(
         description="Crop, resize and convert images or videos, and compress audio. Videos are de-interlaced "
                     "automatically. Run with no arguments for interactive mode.")
-    p.add_argument('-i', '--input', default='input_folder', help="input folder (default: input_folder)")
-    p.add_argument('-o', '--output', default='output_folder', help="output folder (default: output_folder)")
+    p.add_argument('-i', '--input', default=DEFAULT_INPUT,
+                   help="input folder (default: input_folder next to this script)")
+    p.add_argument('-o', '--output', default=DEFAULT_OUTPUT,
+                   help="output folder (default: output_folder next to this script)")
     p.add_argument('-m', '--media', choices=['image', 'video', 'audio', 'both', 'all'], default='image',
                    help="type of files to convert; both = images and videos, all = everything (default: image)")
     p.add_argument('-f', '--format', help=f"output type with a single -m type. images: {', '.join(IMAGE_FORMATS)}; "
                                           f"videos: {', '.join(VIDEO_FORMATS)}; audio: {', '.join(AUDIO_FORMATS)}")
-    p.add_argument('--image-format', help="output type for images with -m both/all (default: png)")
+    p.add_argument('--image-format', help="output type for images with -m both/all (default: webp)")
     p.add_argument('--video-format', help="output type for videos with -m both/all (default: mp4)")
     p.add_argument('--audio-format', help="output type for audio with -m all, and for audio split from videos "
                                           "with -a (default: mp3)")
@@ -671,7 +706,7 @@ def run():
     if args.audio_only and kinds == ('video',):
         audio_format = args.format or audio_format
         kinds = ()
-    per_kind = {'image': (args.image_format, 'png'), 'video': (args.video_format, 'mp4'),
+    per_kind = {'image': (args.image_format, 'webp'), 'video': (args.video_format, 'mp4'),
                 'audio': (args.audio_format, 'mp3')}
     fmts = {k: check_format(args.format or per_kind[k][0], k, per_kind[k][1]) for k in kinds}
     if args.audio_only:

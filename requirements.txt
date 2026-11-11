@@ -1,0 +1,3 @@
+pillow
+tqdm
+imageio-ffmpeg  # bundled ffmpeg for videos and audio; optional if ffmpeg is already on your PATH

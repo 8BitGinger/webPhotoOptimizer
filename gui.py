@@ -1,5 +1,7 @@
+import ctypes
 import os
 import queue
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -7,6 +9,15 @@ from tkinter import filedialog, messagebox, ttk
 import script
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ICON_PATH = os.path.join(BASE_DIR, 'dino.ico')
+
+# Dark colour scheme
+BG = '#1e1f22'        # window background
+SURFACE = '#2b2d31'   # inputs, buttons, log
+BORDER = '#3c3f45'
+FG = '#e3e5e8'        # main text
+MUTED = '#8e9297'     # hints and disabled text
+ACCENT = '#5b8def'    # progress bar, focus, selection
 
 SOUND_CHOICES = [
     ('Keep it in the video', 'keep'),
@@ -24,8 +35,8 @@ class App(ttk.Frame):
         self.worker = None
         self.current_file = None
 
-        self.input_var = tk.StringVar(value=os.path.join(BASE_DIR, 'input_folder'))
-        self.output_var = tk.StringVar(value=os.path.join(BASE_DIR, 'output_folder'))
+        self.input_var = tk.StringVar(value=script.DEFAULT_INPUT)
+        self.output_var = tk.StringVar(value=script.DEFAULT_OUTPUT)
         self.do_image = tk.BooleanVar(value=True)
         self.do_video = tk.BooleanVar(value=False)
         self.do_audio = tk.BooleanVar(value=False)
@@ -90,7 +101,7 @@ class App(ttk.Frame):
             rb = ttk.Radiobutton(box, text=text, value=value, variable=self.sound, command=self.update_state)
             rb.grid(row=3 + n, column=1, columnspan=3, sticky='w', pady=(8 if n == 0 else 0, 0))
             self.sound_buttons.append(rb)
-        ttk.Label(box, text='Audio from videos uses the Audio type above.', foreground='gray').grid(
+        ttk.Label(box, text='Audio from videos uses the Audio type above.', style='Hint.TLabel').grid(
             row=6, column=1, columnspan=3, sticky='w')
 
         # Options
@@ -128,7 +139,9 @@ class App(ttk.Frame):
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
         self.rowconfigure(row, weight=1)
-        self.log_text = tk.Text(log_frame, height=10, state='disabled', wrap='word')
+        self.log_text = tk.Text(log_frame, height=10, state='disabled', wrap='word', bg=SURFACE, fg=FG,
+                                insertbackground=FG, selectbackground=ACCENT, relief='flat',
+                                highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER)
         self.log_text.grid(row=0, column=0, sticky='nsew')
         scroll = ttk.Scrollbar(log_frame, command=self.log_text.yview)
         scroll.grid(row=0, column=1, sticky='ns')
@@ -141,7 +154,7 @@ class App(ttk.Frame):
         combo.bind('<<ComboboxSelected>>', lambda e: self.update_state())
         entry = ttk.Entry(parent, textvariable=custom_var, width=14)
         entry.grid(row=r, column=2, pady=2)
-        ttk.Label(parent, text=hint, foreground='gray').grid(row=r, column=3, padx=(6, 0), sticky='w')
+        ttk.Label(parent, text=hint, style='Hint.TLabel').grid(row=r, column=3, padx=(6, 0), sticky='w')
         return combo, entry
 
     # ---------- state ----------
@@ -233,6 +246,11 @@ class App(ttk.Frame):
         if not os.path.isdir(settings['input_folder']):
             messagebox.showerror('Input folder not found', f"'{settings['input_folder']}' does not exist.")
             return
+        if script.same_folder(settings['input_folder'], settings['output_folder']):
+            messagebox.showerror('Choose a different output folder',
+                                 'The output folder must be different from the input folder, '
+                                 'or your original files could be overwritten.')
+            return
 
         self.cancel_requested.clear()
         self.current_file = None
@@ -284,8 +302,82 @@ class App(ttk.Frame):
         self.root.after(100, self.poll)
 
 
+def apply_dark_theme(root):
+    root.configure(bg=BG)
+    style = ttk.Style(root)
+    style.theme_use('clam')  # the native Windows theme ignores most colour settings
+
+    style.configure('.', background=BG, foreground=FG, fieldbackground=SURFACE, bordercolor=BORDER,
+                    lightcolor=BORDER, darkcolor=BORDER, troughcolor=SURFACE, focuscolor=ACCENT,
+                    selectbackground=ACCENT, selectforeground='#ffffff', insertcolor=FG, arrowcolor=FG)
+    style.map('.', foreground=[('disabled', MUTED)])
+
+    style.configure('TLabelframe', background=BG, bordercolor=BORDER)
+    style.configure('TLabelframe.Label', background=BG, foreground=FG)
+    style.configure('Hint.TLabel', foreground=MUTED)
+
+    style.configure('TButton', background=SURFACE, padding=(10, 4))
+    style.map('TButton', background=[('disabled', BG), ('pressed', BORDER), ('active', BORDER)])
+
+    for widget in ('TCheckbutton', 'TRadiobutton'):
+        style.configure(widget, background=BG, indicatorbackground=SURFACE, indicatorforeground=FG)
+        style.map(widget, background=[('active', BG)],
+                  indicatorbackground=[('selected', ACCENT), ('disabled', BG), ('active', BORDER)])
+
+    style.configure('TEntry', fieldbackground=SURFACE)
+    style.map('TEntry', fieldbackground=[('disabled', BG)])
+    style.configure('TCombobox', fieldbackground=SURFACE, background=SURFACE)
+    style.map('TCombobox', fieldbackground=[('disabled', BG), ('readonly', SURFACE)],
+              foreground=[('disabled', MUTED), ('readonly', FG)],
+              selectbackground=[('readonly', SURFACE)], selectforeground=[('readonly', FG)],
+              background=[('active', BORDER)])
+    # The combobox drop-down list is a plain Tk listbox, styled through the option database
+    root.option_add('*TCombobox*Listbox.background', SURFACE)
+    root.option_add('*TCombobox*Listbox.foreground', FG)
+    root.option_add('*TCombobox*Listbox.selectBackground', ACCENT)
+    root.option_add('*TCombobox*Listbox.selectForeground', '#ffffff')
+
+    style.configure('Horizontal.TProgressbar', background=ACCENT, troughcolor=SURFACE)
+    style.configure('Vertical.TScrollbar', background=SURFACE, troughcolor=BG, arrowcolor=FG)
+    style.map('Vertical.TScrollbar', background=[('active', BORDER)])
+
+
+def dark_title_bar(root):
+    """Ask Windows 10/11 to draw this window's title bar dark. Older Windows ignores it."""
+    try:
+        root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        value = ctypes.c_int(1)
+        for attribute in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (20 on newer builds, 19 on older)
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value),
+                                                          ctypes.sizeof(value)) == 0:
+                break
+    except (AttributeError, OSError):
+        pass
+
+
+def set_icon(root):
+    if not os.path.exists(ICON_PATH):
+        return
+    if sys.platform == 'win32':
+        # Without its own app ID, Windows groups the window under python.exe and shows Python's icon
+        # on the taskbar instead of ours
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('webPhotoOptimizer.gui')
+        except (AttributeError, OSError):
+            pass
+    try:
+        root.iconbitmap(default=ICON_PATH)  # default= also applies it to dialogs
+    except tk.TclError:
+        pass
+
+
 def main():
     root = tk.Tk()
+    set_icon(root)
+    apply_dark_theme(root)
+    if sys.platform == 'win32':
+        dark_title_bar(root)
     root.title('Web Photo / Video / Audio Optimizer')
     root.minsize(640, 600)
     App(root)

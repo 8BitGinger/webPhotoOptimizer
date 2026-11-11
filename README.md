@@ -2,7 +2,7 @@
 
 A Python script that batch-converts, crops, resizes and compresses images, **videos and audio** for the web. Drop files into `input_folder`, run the script, and collect the results from `output_folder`.
 
-- **Images:** PNG, JPG, WebP, TIFF, BMP, GIF
+- **Images:** PNG, JPG, WebP, TIFF, BMP, GIF, ICO (Windows / favicon icons)
 - **Videos:** MP4, WebM, MOV, MKV, GIF (via ffmpeg). Animated GIFs can be used as video input
 - **Audio:** MP3, M4A (AAC), Opus, FLAC (via ffmpeg)
 - Center-crop to any aspect ratio, and downscale to a maximum size (never upscales)
@@ -19,22 +19,16 @@ A Python script that batch-converts, crops, resizes and compresses images, **vid
 - ffmpeg (only needed for videos and audio)
 
 ```bash
-pip install pillow tqdm
+pip install -r requirements.txt
 ```
 
-For ffmpeg, either [install it](https://ffmpeg.org/download.html) and make sure it is on your `PATH`, or let Python bundle one:
-
-```bash
-pip install imageio-ffmpeg
-```
-
-> `package.json` in this repo is a leftover and isn't used. Only the Python dependencies above are required.
+This installs Pillow, tqdm and [imageio-ffmpeg](https://pypi.org/project/imageio-ffmpeg/), which bundles a copy of ffmpeg. If you already have [ffmpeg](https://ffmpeg.org/download.html) on your `PATH`, `pip install pillow tqdm` is enough.
 
 ## Quick start
 
 Double-click **`launch_gui.bat`** to open the GUI (see [GUI](#gui)), or use the terminal:
 
-1. Put your files in `input_folder/` (create it next to `script.py` if it doesn't exist).
+1. Put your files in `input_folder/` next to `script.py`.
 2. Run the script:
 
    ```bash
@@ -47,7 +41,7 @@ Double-click **`launch_gui.bat`** to open the GUI (see [GUI](#gui)), or use the 
 
 `launch_gui.bat` (or `python gui.py`) opens a window with the same options as the interactive menu:
 
-- Pick the input and output folders (defaults are `input_folder` and `output_folder`); **Open** shows a folder in Explorer.
+- Pick the input and output folders (defaults are `input_folder` and `output_folder`); **Open** shows a folder in Explorer. The two must be different folders, so your originals can't be overwritten.
 - Tick **Images**, **Videos** and/or **Audio** and choose an output type for each.
 - **Video sound** (when Videos is ticked): keep it in the video, split it out into a silent video plus an audio file, or **audio only** to save just the sound with no video file. Audio taken from videos uses the Audio type.
 - Set crop ratio, maximum size, quality and metadata. Choose **Custom...** to type your own value. Options that don't apply to your choices are greyed out.
@@ -62,18 +56,18 @@ Running with no arguments walks you through each choice:
 | Prompt | Options |
 | --- | --- |
 | What to convert | Images, videos, audio, images and videos, or everything |
-| Output file type | Image: PNG, JPG, WebP, TIFF, BMP, GIF. Video: MP4, WebM, MOV, MKV, GIF. Audio: MP3, M4A, Opus, FLAC |
+| Output file type | Image: PNG, JPG, WebP, TIFF, BMP, GIF, ICO. Video: MP4, WebM, MOV, MKV, GIF. Audio: MP3, M4A, Opus, FLAC |
 | Video sound (videos only) | Keep it in the video (default), split it out into a silent video plus a separate audio file, or audio only (no video file). The audio format is the one you pick |
 | Crop to aspect ratio (not asked for audio only) | Original, 1:1, 16:9, 9:16, 4:3, 3:2, 4:5, 21:9, or custom |
 | Maximum output size (not asked for audio only) | Original, 4K, QHD, Full HD (default), HD, square/portrait/vertical presets, thumbnail, or custom |
 | Quality | Lossless, High (95), Good (80, default), Medium (65), Low (50), or custom 1–100 |
 | Keep metadata | No (default) or yes |
 
-The quality prompt is skipped when the chosen formats ignore it (PNG, TIFF, BMP, GIF, FLAC).
+The quality prompt is skipped when the chosen formats ignore it (PNG, TIFF, BMP, GIF, ICO, FLAC).
 
 ## Command-line usage
 
-Passing any argument switches to non-interactive mode.
+Passing any argument switches to non-interactive mode. The default folders are the ones next to `script.py`, so it works from any directory. The output folder must differ from the input folder.
 
 ```bash
 python script.py [-i INPUT] [-o OUTPUT] [-m {image,video,audio,both,all}] [-f FORMAT]
@@ -83,11 +77,11 @@ python script.py [-i INPUT] [-o OUTPUT] [-m {image,video,audio,both,all}] [-f FO
 
 | Flag | Description | Default |
 | --- | --- | --- |
-| `-i`, `--input` | Input folder | `input_folder` |
-| `-o`, `--output` | Output folder (created if missing) | `output_folder` |
+| `-i`, `--input` | Input folder | `input_folder` next to `script.py` |
+| `-o`, `--output` | Output folder (created if missing) | `output_folder` next to `script.py` |
 | `-m`, `--media` | `image`, `video`, `audio`, `both` (images and videos) or `all` | `image` |
-| `-f`, `--format` | Output type when `-m` is `image`, `video` or `audio` | `png` for images, `mp4` for videos, `mp3` for audio |
-| `--image-format` | Image output type when `-m both` or `all` | `png` |
+| `-f`, `--format` | Output type when `-m` is `image`, `video` or `audio` | `webp` for images, `mp4` for videos, `mp3` for audio |
+| `--image-format` | Image output type when `-m both` or `all` | `webp` |
 | `--video-format` | Video output type when `-m both` or `all` | `mp4` |
 | `--audio-format` | Audio output type when `-m all`, and for audio taken from videos with `-a` or `--audio-only` | `mp3` |
 | `-a`, `--split-audio` | Remove the sound from videos and save it as a separate audio file | off |
@@ -169,7 +163,7 @@ python script.py -m video -f gif -s 640x360
 
 ### Supported inputs
 
-- **Images:** `.png .jpg .jpeg .jfif .tif .tiff .webp .bmp .gif`
+- **Images:** `.png .jpg .jpeg .jfif .tif .tiff .webp .bmp .gif .ico`
 - **Videos:** `.mp4 .mov .mkv .avi .webm .m4v .mpg .mpeg .ts .mts .m2ts .vob .wmv .flv`, plus animated `.gif`
 - **Audio:** `.mp3 .wav .flac .m4a .aac .ogg .oga .opus .wma .aif .aiff .alac .amr .ape .wv`
 
@@ -189,6 +183,7 @@ Only files directly inside the input folder are processed (subfolders are ignore
 | JPG, WebP, MP4/MOV/MKV (H.264), WebM (VP9) | Quality 1–100 controls compression. Higher is better quality and larger files. |
 | `lossless` | WebP and video formats are encoded losslessly. JPG uses quality 100 with full colour detail (JPG can't be truly lossless). |
 | PNG, TIFF, BMP | Always lossless, so quality has no effect. |
+| ICO | Lossless. Each icon stores 16, 24, 32, 48, 64, 128 and 256 px versions (only sizes up to the source size). Non-square images are centred on a transparent square; pick the 1:1 crop to fill the icon instead. |
 | GIF | Always limited to 256 colours, so quality has no effect. Video GIFs are 15 fps. |
 | MP3 | Quality maps to LAME VBR presets: 95 → V0 (~245 kbps), 80 → V2 (~190 kbps), 50 → V5 (~130 kbps). `lossless` uses 320 kbps. |
 | M4A (AAC) | Quality 80 → 192 kbps (max 256). `lossless` uses 256 kbps. |
@@ -197,7 +192,7 @@ Only files directly inside the input folder are processed (subfolders are ignore
 
 ### Transparency
 
-Transparent images keep their alpha channel in formats that support it (PNG, WebP, TIFF, GIF). For JPG and BMP, transparency is flattened onto a white background.
+Transparent images keep their alpha channel in formats that support it (PNG, WebP, TIFF, GIF, ICO). For JPG and BMP, transparency is flattened onto a white background.
 
 ### Metadata
 
@@ -219,7 +214,7 @@ By default metadata such as GPS location and recording device is stripped. Use `
 
 ### Animated GIFs
 
-- **Image mode** keeps the animation when the output is GIF, WebP or PNG (APNG). JPG, BMP and TIFF keep only the first frame, with a warning.
+- **Image mode** keeps the animation when the output is GIF, WebP or PNG (APNG). JPG, BMP, TIFF and ICO keep only the first frame, with a warning.
 - **Video mode** picks up animated GIFs as input. MP4/WebM is usually 5–10× smaller than the GIF; embed it with `<video autoplay loop muted playsinline>`. Transparent areas become black.
 
 ### Output naming
