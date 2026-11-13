@@ -13,7 +13,7 @@ DEFAULT_INPUT = os.path.join(BASE_DIR, 'input_folder')
 DEFAULT_OUTPUT = os.path.join(BASE_DIR, 'output_folder')
 
 IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.jfif', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.ico')
-VIDEO_EXTS = ('.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.mpg', '.mpeg', '.ts', '.mts', '.m2ts', '.vob', '.wmv', '.flv')
+VIDEO_EXTS = ('.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.mpg', '.mpeg', '.ts', '.mts', '.m2ts', '.vob', '.wmv', '.flv', '.mxf')
 
 IMAGE_FORMATS = {
     'png': 'PNG',
