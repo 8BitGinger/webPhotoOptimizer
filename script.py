@@ -592,7 +592,7 @@ def parse_quality(text):
 
 
 def interactive():
-    print("=== Web Photo / Video / Audio Optimizer ===")
+    print("=== Web Media Optimizer ===")
     print("Reading from 'input_folder', writing to 'output_folder'.")
 
     media = choose("What do you want to convert?",
