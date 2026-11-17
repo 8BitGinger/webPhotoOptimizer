@@ -1,4 +1,5 @@
 import argparse
+import importlib.util
 import os
 import re
 import shutil
@@ -56,6 +57,50 @@ def parse_size(text):
     if not m or int(m.group(1)) <= 0 or int(m.group(2)) <= 0:
         raise ValueError(f"Invalid size '{text}' (use e.g. 1920x1080)")
     return int(m.group(1)), int(m.group(2))
+
+
+def parse_time(text):
+    """'1:01' -> 61.0, '1:02:03' -> 3723.0, '90' or '90.5' -> seconds. Empty -> None."""
+    if text is None or not str(text).strip():
+        return None
+    m = re.fullmatch(r'(?:(?:(\d+):)?(\d+):)?(\d+(?:\.\d+)?)', str(text).strip())
+    if not m:
+        raise ValueError(f"Invalid time '{text}' (use e.g. 0:30, 1:01, 1:02:03 or plain seconds)")
+    hours, minutes, seconds = m.groups()
+    return int(hours or 0) * 3600 + int(minutes or 0) * 60 + float(seconds)
+
+
+def parse_trim(start_text, end_text):
+    """Turn start/end times into (start, end) seconds, either of which may be None. Both empty -> None."""
+    start, end = parse_time(start_text), parse_time(end_text)
+    if not start:  # blank or 0 means from the beginning
+        start = None
+    if start is None and end is None:
+        return None
+    if end is not None and end <= (start or 0):
+        raise ValueError("The end time must be after the start time")
+    return start, end
+
+
+def format_time(seconds):
+    minutes, secs = divmod(round(seconds, 1), 60)
+    hours, minutes = divmod(int(minutes), 60)
+    text = f"{secs:04.1f}".removesuffix('.0')
+    return f"{hours}:{minutes:02d}:{text}" if hours else f"{minutes}:{text}"
+
+
+def resolve_trim(trim, duration):
+    """Return (start, length, clip_duration) for ffmpeg. start/length are None when not cutting;
+    clip_duration is the length of what will be written, for progress (None if unknown)."""
+    start, end = trim or (None, None)
+    if duration:
+        if start and start >= duration:
+            raise RuntimeError(f"Cut start {format_time(start)} is past the end of the video ({format_time(duration)})")
+        if end and end >= duration:
+            end = None  # a cut past the end just means "to the end"
+    length = end - (start or 0) if end else None
+    clip = length or (duration - (start or 0) if duration else None)
+    return start, length, clip
 
 
 def find_ffmpeg():
@@ -162,6 +207,28 @@ def make_icon_square(img):
     return canvas
 
 
+BG_MODEL = 'u2net'  # general-purpose model; rembg downloads it (~170 MB) on first use
+_bg_session = None
+
+
+def have_rembg():
+    return importlib.util.find_spec('rembg') is not None
+
+
+def remove_background(img):
+    """Cut the subject out of a PIL image; the background becomes transparent."""
+    global _bg_session
+    # Under pythonw (no console) sys.stdout/stderr are None, and rembg's model download
+    # progress bar crashes with "'NoneType' object has no attribute 'write'".
+    for name in ('stdout', 'stderr'):
+        if getattr(sys, name) is None:
+            setattr(sys, name, open(os.devnull, 'w'))
+    from rembg import new_session, remove
+    if _bg_session is None:  # loading the model is slow, so do it once per run
+        _bg_session = new_session(BG_MODEL)
+    return remove(img, session=_bg_session).convert('RGBA')
+
+
 def convert_animation(img, dst, pil_format, ratio, size, quality):
     """Crop/resize every frame of an animated image and save it as an animation."""
     frames, durations = [], []
@@ -181,7 +248,7 @@ def convert_animation(img, dst, pil_format, ratio, size, quality):
     frames[0].save(dst, pil_format, **save_args)
 
 
-def convert_image(src, dst, fmt, ratio=None, size=None, quality=80, keep_metadata=False):
+def convert_image(src, dst, fmt, ratio=None, size=None, quality=80, keep_metadata=False, remove_bg=False):
     """Returns True if an animation was flattened to its first frame."""
     pil_format = IMAGE_FORMATS[fmt]
     lossless = quality == LOSSLESS
@@ -204,6 +271,8 @@ def convert_image(src, dst, fmt, ratio=None, size=None, quality=80, keep_metadat
             img = img.convert('RGB')
 
         img = fit(img, ratio, size)
+        if remove_bg:  # after resizing: faster, and the model works at low resolution anyway
+            img = remove_background(img)
 
         # Formats without alpha support: flatten onto white
         if pil_format in ('JPEG', 'BMP') and img.mode == 'RGBA':
@@ -244,9 +313,9 @@ def convert_image(src, dst, fmt, ratio=None, size=None, quality=80, keep_metadat
 
 # ---------- videos ----------
 
-def is_interlaced(ffmpeg, src, frames=300):
-    """Run ffmpeg's idet filter on the first frames and report whether most are interlaced."""
-    cmd = [ffmpeg, '-hide_banner', '-nostats', '-i', src, '-map', '0:v:0',
+def is_interlaced(ffmpeg, src, frames=300, start=None):
+    """Run ffmpeg's idet filter on the first frames (from start, if cutting) and report whether most are interlaced."""
+    cmd = [ffmpeg, '-hide_banner', '-nostats'] + (['-ss', str(start)] if start else []) + ['-i', src, '-map', '0:v:0',
            '-vf', 'idet', '-frames:v', str(frames), '-an', '-f', 'null', '-']
     result = run_ffmpeg(cmd)
     # ffmpeg may print several summaries (e.g. after a filter reinit); the last one is the real total
@@ -297,12 +366,16 @@ def probe(ffmpeg, src):
 
 
 def convert_video(ffmpeg, src, dst, fmt, ratio=None, size=None, quality=80, keep_metadata=False,
-                  strip_audio=False, duration=None, watch=None):
+                  strip_audio=False, duration=None, watch=None, trim=None):
     lossless = quality == LOSSLESS
-    interlaced = not src.lower().endswith('.gif') and is_interlaced(ffmpeg, src)
+    start, length, duration = resolve_trim(trim, duration)
+    interlaced = not src.lower().endswith('.gif') and is_interlaced(ffmpeg, src, start=start)
     vf = build_video_filter(ratio, size, interlaced, fmt)
 
-    cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-i', src]
+    # -ss before -i seeks quickly, and since everything is re-encoded the cut is still frame-accurate
+    cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y'] + (['-ss', str(start)] if start else []) + ['-i', src]
+    if length:
+        cmd += ['-t', str(length)]
     if fmt == 'gif':
         cmd += ['-filter_complex', vf, '-an']
     else:
@@ -344,9 +417,13 @@ def convert_video(ffmpeg, src, dst, fmt, ratio=None, size=None, quality=80, keep
 
 # ---------- audio ----------
 
-def convert_audio(ffmpeg, src, dst, fmt, quality=80, keep_metadata=False, duration=None, watch=None):
+def convert_audio(ffmpeg, src, dst, fmt, quality=80, keep_metadata=False, duration=None, watch=None, trim=None):
+    start, length, duration = resolve_trim(trim, duration)
     # Only the first audio track; drops embedded cover art, which can be larger than the audio
-    cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-i', src, '-map', '0:a:0', '-vn']
+    cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y'] + (['-ss', str(start)] if start else []) + ['-i', src]
+    if length:
+        cmd += ['-t', str(length)]
+    cmd += ['-map', '0:a:0', '-vn']
     if not keep_metadata:
         cmd += ['-map_metadata', '-1']
 
@@ -409,7 +486,7 @@ def same_folder(a, b):
 
 def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, ratio=None, size=None,
                    quality=80, keep_metadata=False, audio_fmt=None, split_audio_fmt=None, audio_only=False,
-                   log=tqdm.write, progress=None, cancel=None):
+                   log=tqdm.write, progress=None, cancel=None, remove_bg=False, trim=None):
     """Convert every image, video and/or audio file in input_folder to the given formats.
 
     With split_audio_fmt, videos are written without sound and each video's audio
@@ -420,6 +497,9 @@ def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, 
     current names the file in progress (None once it finishes) and fraction is how far through
     it ffmpeg is, 0-1 (None when unknown, e.g. for images).
     cancel(), if given, is polled between files and stops the run when it returns True.
+
+    remove_bg makes image backgrounds transparent (needs the rembg package). trim=(start, end) in seconds
+    cuts every video, and the audio taken from it, to that range; either end may be None.
     """
     audio_only = audio_only and bool(split_audio_fmt)
     if audio_only:
@@ -459,6 +539,11 @@ def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, 
         for fmt in dict.fromkeys(f for f in (audio_fmt, split_audio_fmt) if f in LOSSY_AUDIO_FORMATS):
             log(f"Note: {fmt.upper()} can't be lossless; using its highest bitrate. Choose FLAC for lossless audio.")
 
+    if remove_bg and image_fmt and not have_rembg():
+        raise RuntimeError('Removing backgrounds needs the rembg package. Install it with: pip install "rembg[cpu]"')
+    if remove_bg and image_fmt in ('jpg', 'bmp'):
+        log(f"Note: {image_fmt.upper()} has no transparency, so removed backgrounds become white.")
+
     ffmpeg = None
     if any(media in ('video', 'audio', 'extract') for _, media, _ in jobs):
         ffmpeg = find_ffmpeg()
@@ -491,7 +576,9 @@ def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, 
 
         try:
             if media == 'image':
-                if convert_image(src, dst, fmt, ratio, size, quality, keep_metadata):
+                if remove_bg and is_animated(src) and IMAGE_FORMATS[fmt] in ANIMATED_FORMATS:
+                    log(f"{filename} is animated; background removal only works on still images, so it was left as is.")
+                if convert_image(src, dst, fmt, ratio, size, quality, keep_metadata, remove_bg):
                     log(f"{filename} is animated; {fmt.upper()} can't animate, so only the first frame "
                         f"was kept. Use GIF/WEBP/PNG, or convert it as a video.")
             else:
@@ -501,11 +588,11 @@ def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, 
                     convert_audio(ffmpeg, src, dst, fmt, quality, keep_metadata, duration, watcher)
                 elif media == 'extract':
                     if audio_present:
-                        convert_audio(ffmpeg, src, dst, fmt, quality, keep_metadata, duration, watcher)
+                        convert_audio(ffmpeg, src, dst, fmt, quality, keep_metadata, duration, watcher, trim)
                     else:
                         log(f"{filename} has no audio track; no audio file was created")
                 elif convert_video(ffmpeg, src, dst, fmt, ratio, size, quality, keep_metadata,
-                                   bool(split_audio_fmt), duration, watcher):
+                                   bool(split_audio_fmt), duration, watcher, trim):
                     log(f"De-interlaced {filename}")
         except Cancelled:
             if os.path.exists(dst):  # ffmpeg was killed mid-write, so the file is incomplete
@@ -635,12 +722,28 @@ def interactive():
     else:
         quality = LOSSLESS
 
+    remove_bg = False
+    if image_fmt:
+        remove_bg = choose("Remove the background from images (needs rembg)?",
+                           [('No', False), ('Yes, make it transparent', True)])
+
+    trim = None
+    if video_fmt or split_audio_fmt:
+        if choose("Cut videos to a time range?", [('No, keep the whole video', False), ('Yes', True)]):
+            while trim is None:
+                try:
+                    trim = parse_trim(input("Start time, e.g. 0:30 (blank = beginning): "),
+                                      input("End time, e.g. 1:01 (blank = end): "))
+                except ValueError as e:
+                    print(f"  {e}")
+
     keep_metadata = choose("Keep metadata (camera info, date, GPS location, audio tags)?",
                            [('No, strip it (smaller, more private)', False), ('Yes, keep it', True)])
 
     return dict(input_folder=DEFAULT_INPUT, output_folder=DEFAULT_OUTPUT, image_fmt=image_fmt,
                 video_fmt=video_fmt, audio_fmt=audio_fmt, ratio=ratio, size=size, quality=quality,
-                keep_metadata=keep_metadata, split_audio_fmt=split_audio_fmt, audio_only=audio_only)
+                keep_metadata=keep_metadata, split_audio_fmt=split_audio_fmt, audio_only=audio_only,
+                remove_bg=remove_bg, trim=trim)
 
 
 def main():
@@ -682,6 +785,11 @@ def run():
                    help="quality 1-100 or 'lossless' (default: 80)")
     p.add_argument('-k', '--keep-metadata', action='store_true',
                    help="keep camera info, dates and GPS location (stripped by default)")
+    p.add_argument('--remove-bg', action='store_true',
+                   help="make image backgrounds transparent (needs: pip install \"rembg[cpu]\"); "
+                        "JPG and BMP get a white background")
+    p.add_argument('--start', help="cut videos (and audio taken from them) from this time, e.g. 0:30 or 1:02:03")
+    p.add_argument('--end', help="cut videos (and audio taken from them) at this time, e.g. 1:01")
     args = p.parse_args()
 
     valid_formats = {'image': IMAGE_FORMATS, 'video': VIDEO_FORMATS, 'audio': AUDIO_FORMATS}
@@ -695,6 +803,10 @@ def run():
             p.error(f"'{fmt}' is not a valid {kind} format. Choose from: {', '.join(valid)}")
         return fmt
 
+    try:
+        trim = parse_trim(args.start, args.end)
+    except ValueError as e:
+        p.error(str(e))
     kinds = {'both': ('image', 'video'), 'all': ('image', 'video', 'audio')}.get(args.media, (args.media,))
     if len(kinds) > 1 and args.format:
         p.error(f"with -m {args.media}, use --image-format, --video-format and --audio-format instead of -f")
@@ -712,6 +824,11 @@ def run():
     if args.audio_only:
         fmts.pop('video', None)
 
+    if args.remove_bg and 'image' not in kinds:
+        p.error("--remove-bg needs -m image, both or all")
+    if trim and 'video' not in kinds and not args.audio_only:
+        p.error("--start/--end need -m video, both or all")
+
     split_audio_fmt = None
     if args.split_audio or args.audio_only:
         if 'video' not in kinds and not args.audio_only:
@@ -719,7 +836,8 @@ def run():
         split_audio_fmt = check_format(audio_format, 'audio', 'mp3')
 
     process_folder(args.input, args.output, fmts.get('image'), fmts.get('video'), args.ratio, args.size,
-                   args.quality, args.keep_metadata, fmts.get('audio'), split_audio_fmt, args.audio_only)
+                   args.quality, args.keep_metadata, fmts.get('audio'), split_audio_fmt, args.audio_only,
+                   remove_bg=args.remove_bg, trim=trim)
 
 
 if __name__ == '__main__':

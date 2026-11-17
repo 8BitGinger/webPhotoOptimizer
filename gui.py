@@ -45,6 +45,9 @@ class App(ttk.Frame):
         self.audio_fmt = tk.StringVar(value='mp3')
         self.sound = tk.StringVar(value='keep')
         self.keep_metadata = tk.BooleanVar(value=False)
+        self.remove_bg = tk.BooleanVar(value=False)
+        self.trim_start = tk.StringVar()
+        self.trim_end = tk.StringVar()
 
         self.ratio_var = tk.StringVar(value=script.RATIO_CHOICES[0][0])
         self.size_var = tk.StringVar(value=script.SIZE_CHOICES[3][0])
@@ -116,8 +119,23 @@ class App(ttk.Frame):
             opts, 1, 'Maximum size', self.size_var, [l for l, _ in script.SIZE_CHOICES], self.size_custom, 'e.g. 1600x900')
         self.quality_combo, self.quality_entry = self.option_row(
             opts, 2, 'Quality', self.quality_var, [l for l, _ in script.QUALITY_CHOICES], self.quality_custom, '1-100')
+        self.bg_check = ttk.Checkbutton(opts, text='Remove background from images (needs rembg; JPG/BMP get white)',
+                                        variable=self.remove_bg)
+        self.bg_check.grid(row=3, column=0, columnspan=4, sticky='w', pady=(6, 0))
+
+        trim_row = ttk.Frame(opts)
+        trim_row.grid(row=4, column=0, columnspan=4, sticky='w', pady=(6, 0))
+        ttk.Label(trim_row, text='Cut videos: from').grid(row=0, column=0)
+        self.trim_start_entry = ttk.Entry(trim_row, textvariable=self.trim_start, width=9)
+        self.trim_start_entry.grid(row=0, column=1, padx=6)
+        ttk.Label(trim_row, text='to').grid(row=0, column=2)
+        self.trim_end_entry = ttk.Entry(trim_row, textvariable=self.trim_end, width=9)
+        self.trim_end_entry.grid(row=0, column=3, padx=6)
+        ttk.Label(trim_row, text='e.g. 0:30 to 1:01 (blank = start / end of video)', style='Hint.TLabel').grid(
+            row=0, column=4)
+
         ttk.Checkbutton(opts, text='Keep metadata (camera info, date, GPS location, audio tags)',
-                        variable=self.keep_metadata).grid(row=3, column=0, columnspan=3, sticky='w', pady=(6, 0))
+                        variable=self.keep_metadata).grid(row=5, column=0, columnspan=4, sticky='w', pady=(6, 0))
 
         # Run controls
         controls = ttk.Frame(self)
@@ -187,6 +205,10 @@ class App(ttk.Frame):
             enable(combo, visual, readonly=True)
             enable(entry, visual and combo.get() == 'Custom...')
 
+        self.bg_check.configure(state='normal' if image_fmt else 'disabled')
+        for entry in (self.trim_start_entry, self.trim_end_entry):
+            enable(entry, self.do_video.get())
+
         # Quality is ignored by always-lossless formats
         uses_quality = any(f and f not in script.FIXED_QUALITY_FORMATS
                            for f in (image_fmt, video_fmt, audio_fmt, split_fmt))
@@ -214,10 +236,14 @@ class App(ttk.Frame):
             quality = self.read_choice(self.quality_combo, script.QUALITY_CHOICES, self.quality_custom,
                                        script.parse_quality)
 
+        trim = None
+        if self.do_video.get():
+            trim = script.parse_trim(self.trim_start.get(), self.trim_end.get())
+
         return dict(input_folder=self.input_var.get(), output_folder=self.output_var.get(),
                     image_fmt=image_fmt, video_fmt=video_fmt, audio_fmt=audio_fmt, ratio=ratio, size=size,
                     quality=quality, keep_metadata=self.keep_metadata.get(), split_audio_fmt=split_fmt,
-                    audio_only=audio_only)
+                    audio_only=audio_only, remove_bg=bool(image_fmt) and self.remove_bg.get(), trim=trim)
 
     # ---------- actions ----------
 

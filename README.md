@@ -9,6 +9,8 @@ A Python script that batch-converts, crops, resizes and compresses images, **vid
 - Lossy or lossless output with a single quality setting
 - Metadata (EXIF, GPS, camera info) stripped by default for smaller, more private files
 - Automatic de-interlacing for videos
+- **Remove image backgrounds** (transparent cut-outs, optional, via [rembg](https://github.com/danielgatis/rembg))
+- **Cut videos** to an exact time range such as `0:30` to `1:01`
 - Split a video's sound into a separate audio file, leaving a silent video, or save **just the audio** with no video file
 - Simple desktop **GUI**, an interactive menu, **or** command-line flags for scripting
 
@@ -17,12 +19,15 @@ A Python script that batch-converts, crops, resizes and compresses images, **vid
 - Python 3.9+
 - [Pillow](https://pypi.org/project/pillow/) and [tqdm](https://pypi.org/project/tqdm/)
 - ffmpeg (only needed for videos and audio)
+- [rembg](https://pypi.org/project/rembg/) (only needed for background removal)
 
 ```bash
 pip install -r requirements.txt
 ```
 
 This installs Pillow, tqdm and [imageio-ffmpeg](https://pypi.org/project/imageio-ffmpeg/), which bundles a copy of ffmpeg. If you already have [ffmpeg](https://ffmpeg.org/download.html) on your `PATH`, `pip install pillow tqdm` is enough.
+
+Background removal is optional and installed separately: `pip install "rembg[cpu]"`. The first time it runs, rembg downloads its AI model (about 170 MB) to your user folder.
 
 ## Quick start
 
@@ -44,6 +49,7 @@ Double-click **`launch_gui.bat`** to open the GUI (see [GUI](#gui)), or use the 
 - Pick the input and output folders (defaults are `input_folder` and `output_folder`); **Open** shows a folder in Explorer. The two must be different folders, so your originals can't be overwritten.
 - Tick **Images**, **Videos** and/or **Audio** and choose an output type for each.
 - **Video sound** (when Videos is ticked): keep it in the video, split it out into a silent video plus an audio file, or **audio only** to save just the sound with no video file. Audio taken from videos uses the Audio type.
+- **Remove background** (when Images is ticked) makes the background transparent. **Cut videos** takes a start and end time (leave one blank for the start or end of the video).
 - Set crop ratio, maximum size, quality and metadata. Choose **Custom...** to type your own value. Options that don't apply to your choices are greyed out.
 - **Convert** runs in the background with a progress bar, a log, and a live percentage for the video or audio file being encoded. **Stop** cancels immediately, even mid-encode, and removes the unfinished file.
 
@@ -61,6 +67,8 @@ Running with no arguments walks you through each choice:
 | Crop to aspect ratio (not asked for audio only) | Original, 1:1, 16:9, 9:16, 4:3, 3:2, 4:5, 21:9, or custom |
 | Maximum output size (not asked for audio only) | Original, 4K, QHD, Full HD (default), HD, square/portrait/vertical presets, thumbnail, or custom |
 | Quality | Lossless, High (95), Good (80, default), Medium (65), Low (50), or custom 1–100 |
+| Remove background (images only) | No (default) or yes |
+| Cut videos (videos only) | No (default), or yes with a start and end time |
 | Keep metadata | No (default) or yes |
 
 The quality prompt is skipped when the chosen formats ignore it (PNG, TIFF, BMP, GIF, ICO, FLAC).
@@ -73,6 +81,7 @@ Passing any argument switches to non-interactive mode. The default folders are t
 python script.py [-i INPUT] [-o OUTPUT] [-m {image,video,audio,both,all}] [-f FORMAT]
                  [--image-format FMT] [--video-format FMT] [--audio-format FMT]
                  [-a] [--audio-only] [-r RATIO] [-s SIZE] [-q QUALITY] [-k]
+                 [--remove-bg] [--start TIME] [--end TIME]
 ```
 
 | Flag | Description | Default |
@@ -90,6 +99,9 @@ python script.py [-i INPUT] [-o OUTPUT] [-m {image,video,audio,both,all}] [-f FO
 | `-s`, `--size` | Maximum size as `WxH`, or `original` to keep | `1920x1080` |
 | `-q`, `--quality` | `1`–`100` or `lossless` | `80` |
 | `-k`, `--keep-metadata` | Keep camera info, dates and GPS location | stripped |
+| `--remove-bg` | Make image backgrounds transparent (needs rembg) | off |
+| `--start` | Cut videos from this time: `0:30`, `1:02:03` or seconds | start of video |
+| `--end` | Cut videos at this time | end of video |
 
 ### Examples
 
@@ -153,6 +165,18 @@ Convert everything in one pass:
 python script.py -m all --image-format webp --video-format mp4 --audio-format m4a
 ```
 
+Transparent cut-out PNGs of your photos' subjects:
+
+```bash
+python script.py -f png --remove-bg
+```
+
+Keep only 0:30 to 1:01 of each video:
+
+```bash
+python script.py -m video -f mp4 --start 0:30 --end 1:01
+```
+
 Turn a clip into an animated GIF:
 
 ```bash
@@ -190,6 +214,13 @@ Only files directly inside the input folder are processed (subfolders are ignore
 | Opus | Quality 80 → 128 kbps (max 192). Best quality per byte, especially for speech. `lossless` uses 192 kbps. |
 | FLAC | Always lossless, so quality has no effect. |
 
+### Removing backgrounds
+
+- Uses rembg's `u2net` model, which works best on a clear main subject (people, products, animals). Results are not perfect on busy scenes.
+- Runs on the CPU, so expect roughly a second or more per photo; the model loads once per run.
+- It runs after cropping and resizing. Output formats without transparency (JPG, BMP) get a white background; use PNG, WebP, TIFF or ICO to keep it transparent.
+- Animated images and videos are not processed; they are left as is.
+
 ### Transparency
 
 Transparent images keep their alpha channel in formats that support it (PNG, WebP, TIFF, GIF, ICO). For JPG and BMP, transparency is flattened onto a white background.
@@ -205,6 +236,12 @@ By default metadata such as GPS location and recording device is stripped. Use `
 - GIF output is built with a generated palette for better colour and has no audio.
 - With audio only, no video is written; each video produces just its audio file. Videos with no audio track are skipped with a note, and animated GIFs are ignored.
 - With split audio, the first audio track is saved using the same settings as audio conversion (see the quality table). Videos with no audio track are still converted, with a note that no audio file was made.
+
+### Cutting videos
+
+- The start and end apply to every video in the run (and to the audio split from them), so use a separate run for clips that need different times. Standalone audio files are not cut.
+- Times can be `seconds`, `minutes:seconds` or `hours:minutes:seconds`, with decimals allowed (`1:01.5`). A blank start means the beginning, a blank end means the end.
+- The cut is frame-accurate because the video is re-encoded. An end past the video's length just means "to the end"; a start past the end is reported as an error for that file.
 
 ### Audio details
 
