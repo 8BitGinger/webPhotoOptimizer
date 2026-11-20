@@ -1,5 +1,6 @@
 import argparse
 import importlib.util
+import io
 import os
 import re
 import shutil
@@ -13,10 +14,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_INPUT = os.path.join(BASE_DIR, 'input_folder')
 DEFAULT_OUTPUT = os.path.join(BASE_DIR, 'output_folder')
 
-IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.jfif', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.ico')
+IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.jfif', '.tif', '.tiff', '.webp', '.bmp', '.gif', '.ico', '.svg')
 VIDEO_EXTS = ('.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.mpg', '.mpeg', '.ts', '.mts', '.m2ts', '.vob', '.wmv', '.flv', '.mxf')
 
 IMAGE_FORMATS = {
+    
     'png': 'PNG',
     'jpg': 'JPEG',
     'webp': 'WEBP',
@@ -248,11 +250,34 @@ def convert_animation(img, dst, pil_format, ratio, size, quality):
     frames[0].save(dst, pil_format, **save_args)
 
 
+SVG_MAX_SIDE = 8192  # cap on the rendered size, so a huge target can't exhaust memory
+
+
+def open_svg(src, ratio, size):
+    """Render an SVG to a PIL image. Vectors have no fixed pixel size, so render at the size needed
+    to cover the requested box (sharp, rather than upscaled later); without a size use its own."""
+    try:
+        import resvg_py
+    except ImportError as e:
+        raise RuntimeError('SVG input needs the resvg-py package. Install it with: pip install resvg-py') from e
+
+    def render(zoom):
+        return Image.open(io.BytesIO(bytes(resvg_py.svg_to_bytes(svg_path=src, zoom=zoom)))).convert('RGBA')
+
+    img = render(1)
+    scale = 1.0
+    if size:
+        scale = max(size[0] / img.width, size[1] / img.height)
+    scale = min(scale, SVG_MAX_SIDE / max(img.size))
+    return img if abs(scale - 1) < 0.01 else render(scale)
+
+
 def convert_image(src, dst, fmt, ratio=None, size=None, quality=80, keep_metadata=False, remove_bg=False):
     """Returns True if an animation was flattened to its first frame."""
     pil_format = IMAGE_FORMATS[fmt]
     lossless = quality == LOSSLESS
-    with Image.open(src) as img:
+    is_svg = src.lower().endswith('.svg')
+    with (open_svg(src, ratio, size) if is_svg else Image.open(src)) as img:
         animated = getattr(img, 'is_animated', False)
         if animated and pil_format in ANIMATED_FORMATS:
             convert_animation(img, dst, pil_format, ratio, size, quality)

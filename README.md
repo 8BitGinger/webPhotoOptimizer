@@ -1,4 +1,8 @@
-# Web Photo / Video / Audio Optimizer
+<p align="center">
+  <img src="webPhotoLogo.webp" alt="Web Media Optimizer logo" width="300">
+</p>
+
+# Web Media Optimizer
 
 A Python script that batch-converts, crops, resizes and compresses images, **videos and audio** for the web. Drop files into `input_folder`, run the script, and collect the results from `output_folder`.
 
@@ -187,7 +191,7 @@ python script.py -m video -f gif -s 640x360
 
 ### Supported inputs
 
-- **Images:** `.png .jpg .jpeg .jfif .tif .tiff .webp .bmp .gif .ico`
+- **Images:** `.png .jpg .jpeg .jfif .tif .tiff .webp .bmp .gif .ico .svg` (SVG needs `pip install resvg-py`; it is rendered to pixels at the output size)
 - **Videos:** `.mp4 .mov .mkv .avi .webm .m4v .mpg .mpeg .ts .mts .m2ts .vob .wmv .flv`, plus animated `.gif`
 - **Audio:** `.mp3 .wav .flac .m4a .aac .ogg .oga .opus .wma .aif .aiff .alac .amr .ape .wv`
 

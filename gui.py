@@ -404,7 +404,7 @@ def main():
     apply_dark_theme(root)
     if sys.platform == 'win32':
         dark_title_bar(root)
-    root.title('Web Photo / Video / Audio Optimizer')
+    root.title('Web Media Optimizer')
     root.minsize(640, 600)
     App(root)
     root.mainloop()
