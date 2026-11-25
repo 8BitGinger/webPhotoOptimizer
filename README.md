@@ -9,7 +9,7 @@ A Python script that batch-converts, crops, resizes and compresses images, **vid
 - **Images:** PNG, JPG, WebP, TIFF, BMP, GIF, ICO (Windows / favicon icons)
 - **Videos:** MP4, WebM, MOV, MKV, GIF (via ffmpeg). Animated GIFs can be used as video input
 - **Audio:** MP3, M4A (AAC), Opus, FLAC (via ffmpeg)
-- Center-crop to any aspect ratio, and downscale to a maximum size (never upscales)
+- Center-crop to any aspect ratio (or frame each image by hand in the GUI's visual crop editor, with zoom, flip and tilt), and downscale to a maximum size (never upscales)
 - Lossy or lossless output with a single quality setting
 - Metadata (EXIF, GPS, camera info) stripped by default for smaller, more private files
 - Automatic de-interlacing for videos
@@ -55,6 +55,7 @@ Double-click **`launch_gui.bat`** to open the GUI (see [GUI](#gui)), or use the 
 - **Video sound** (when Videos is ticked): keep it in the video, split it out into a silent video plus an audio file, or **audio only** to save just the sound with no video file. Audio taken from videos uses the Audio type.
 - **Remove background** (when Images is ticked) makes the background transparent. **Cut videos** takes a start and end time (leave one blank for the start or end of the video).
 - Set crop ratio, maximum size, quality and metadata. Choose **Custom...** to type your own value. Options that don't apply to your choices are greyed out.
+- **Visual crop...** opens a crop editor for the images in the input folder. A crop frame in the chosen ratio floats over the picture; **drag** the picture to move it, **scroll** to zoom at the pointer, **flip** or **rotate** it 90°, and **tilt** it up to ±45° to straighten a horizon (a tilted crop zooms in just enough to never show empty corners). Each image you adjust gets a ✓ and is cropped exactly as framed; untouched images use the normal centre crop. **Clear** forgets them all.
 - **Convert** runs in the background with a progress bar, a log, and a live percentage for the video or audio file being encoded. **Stop** cancels immediately, even mid-encode, and removes the unfinished file.
 
 The GUI uses tkinter, which ships with Python, so it needs no extra packages.

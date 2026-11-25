@@ -6,6 +6,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+import crop_editor
 import script
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +35,9 @@ class App(ttk.Frame):
         self.cancel_requested = threading.Event()
         self.worker = None
         self.current_file = None
+        self.crops = {}  # file name -> crop made in the visual crop editor
+        self.crop_folder = None
+        self.editor = None
 
         self.input_var = tk.StringVar(value=script.DEFAULT_INPUT)
         self.output_var = tk.StringVar(value=script.DEFAULT_OUTPUT)
@@ -115,16 +119,24 @@ class App(ttk.Frame):
 
         self.ratio_combo, self.ratio_entry = self.option_row(
             opts, 0, 'Crop to ratio', self.ratio_var, [l for l, _ in script.RATIO_CHOICES], self.ratio_custom, 'e.g. 5:4')
+        crop_row = ttk.Frame(opts)
+        crop_row.grid(row=1, column=1, columnspan=3, sticky='w', padx=6, pady=2)
+        self.visual_btn = ttk.Button(crop_row, text='Visual crop...', command=self.open_crop_editor)
+        self.visual_btn.grid(row=0, column=0)
+        self.clear_crops_btn = ttk.Button(crop_row, text='Clear', command=self.clear_crops)
+        self.clear_crops_btn.grid(row=0, column=1, padx=6)
+        self.crop_status = tk.StringVar()
+        ttk.Label(crop_row, textvariable=self.crop_status, style='Hint.TLabel').grid(row=0, column=2)
         self.size_combo, self.size_entry = self.option_row(
-            opts, 1, 'Maximum size', self.size_var, [l for l, _ in script.SIZE_CHOICES], self.size_custom, 'e.g. 1600x900')
+            opts, 2, 'Maximum size', self.size_var, [l for l, _ in script.SIZE_CHOICES], self.size_custom, 'e.g. 1600x900')
         self.quality_combo, self.quality_entry = self.option_row(
-            opts, 2, 'Quality', self.quality_var, [l for l, _ in script.QUALITY_CHOICES], self.quality_custom, '1-100')
+            opts, 3, 'Quality', self.quality_var, [l for l, _ in script.QUALITY_CHOICES], self.quality_custom, '1-100')
         self.bg_check = ttk.Checkbutton(opts, text='Remove background from images (needs rembg; JPG/BMP get white)',
                                         variable=self.remove_bg)
-        self.bg_check.grid(row=3, column=0, columnspan=4, sticky='w', pady=(6, 0))
+        self.bg_check.grid(row=4, column=0, columnspan=4, sticky='w', pady=(6, 0))
 
         trim_row = ttk.Frame(opts)
-        trim_row.grid(row=4, column=0, columnspan=4, sticky='w', pady=(6, 0))
+        trim_row.grid(row=5, column=0, columnspan=4, sticky='w', pady=(6, 0))
         ttk.Label(trim_row, text='Cut videos: from').grid(row=0, column=0)
         self.trim_start_entry = ttk.Entry(trim_row, textvariable=self.trim_start, width=9)
         self.trim_start_entry.grid(row=0, column=1, padx=6)
@@ -135,7 +147,7 @@ class App(ttk.Frame):
             row=0, column=4)
 
         ttk.Checkbutton(opts, text='Keep metadata (camera info, date, GPS location, audio tags)',
-                        variable=self.keep_metadata).grid(row=5, column=0, columnspan=4, sticky='w', pady=(6, 0))
+                        variable=self.keep_metadata).grid(row=6, column=0, columnspan=4, sticky='w', pady=(6, 0))
 
         # Run controls
         controls = ttk.Frame(self)
@@ -206,6 +218,11 @@ class App(ttk.Frame):
             enable(entry, visual and combo.get() == 'Custom...')
 
         self.bg_check.configure(state='normal' if image_fmt else 'disabled')
+        self.visual_btn.configure(state='normal' if image_fmt else 'disabled')
+        self.clear_crops_btn.configure(state='normal' if image_fmt and self.crops else 'disabled')
+        n = len(self.crops)
+        self.crop_status.set(f"{n} image{'s' if n != 1 else ''} cropped by hand; the rest use the ratio above"
+                             if n else 'Move, zoom, flip and tilt each image under a crop frame')
         for entry in (self.trim_start_entry, self.trim_end_entry):
             enable(entry, self.do_video.get())
 
@@ -240,10 +257,15 @@ class App(ttk.Frame):
         if self.do_video.get():
             trim = script.parse_trim(self.trim_start.get(), self.trim_end.get())
 
+        crops = None
+        if image_fmt and self.crops and script.same_folder(self.crop_folder, self.input_var.get()):
+            crops = dict(self.crops)
+
         return dict(input_folder=self.input_var.get(), output_folder=self.output_var.get(),
                     image_fmt=image_fmt, video_fmt=video_fmt, audio_fmt=audio_fmt, ratio=ratio, size=size,
                     quality=quality, keep_metadata=self.keep_metadata.get(), split_audio_fmt=split_fmt,
-                    audio_only=audio_only, remove_bg=bool(image_fmt) and self.remove_bg.get(), trim=trim)
+                    audio_only=audio_only, remove_bg=bool(image_fmt) and self.remove_bg.get(), trim=trim,
+                    crops=crops)
 
     # ---------- actions ----------
 
@@ -256,6 +278,34 @@ class App(ttk.Frame):
         folder = var.get()
         os.makedirs(folder, exist_ok=True)
         os.startfile(folder)
+
+    def open_crop_editor(self):
+        if self.editor and self.editor.winfo_exists():
+            self.editor.lift()
+            return
+        folder = self.input_var.get()
+        if not os.path.isdir(folder):
+            messagebox.showerror('Input folder not found', f"'{folder}' does not exist.")
+            return
+        files = script.collect_files(folder, 'image')
+        if not files:
+            messagebox.showinfo('No images', f"There are no images in '{folder}' to crop.")
+            return
+        if not (self.crop_folder and script.same_folder(self.crop_folder, folder)):
+            self.crops.clear()  # crops belong to the files of one folder
+        self.crop_folder = folder
+        ratio = self.ratio_combo.get() if str(self.ratio_combo.cget('state')) != 'disabled'             else script.RATIO_CHOICES[0][0]
+        theme = dict(bg=BG, surface=SURFACE, border=BORDER, fg=FG, muted=MUTED, accent=ACCENT)
+        self.editor = crop_editor.CropEditor(self.root, folder, files, self.crops, ratio, self.ratio_custom.get(),
+                                             theme, self.update_state)
+        if sys.platform == 'win32':
+            dark_title_bar(self.editor)
+
+    def clear_crops(self):
+        if self.editor and self.editor.winfo_exists():
+            self.editor.destroy()
+        self.crops.clear()
+        self.update_state()
 
     def log(self, text):
         self.log_text.configure(state='normal')

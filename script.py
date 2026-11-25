@@ -1,6 +1,7 @@
 import argparse
 import importlib.util
 import io
+import math
 import os
 import re
 import shutil
@@ -189,8 +190,55 @@ def center_crop(img, ratio):
     return img.crop((0, top, w, top + new_h))
 
 
-def fit(img, ratio, size):
-    if ratio:
+# Flips and quarter turns from the visual crop editor, applied in the order they were made
+ORIENT_OPS = {
+    'flip_h': Image.Transpose.FLIP_LEFT_RIGHT,
+    'flip_v': Image.Transpose.FLIP_TOP_BOTTOM,
+    'rotate_cw': Image.Transpose.ROTATE_270,
+    'rotate_ccw': Image.Transpose.ROTATE_90,
+}
+
+
+def orient(img, ops):
+    for op in ops:
+        img = img.transpose(ORIENT_OPS[op])
+    return img
+
+
+def crop_rotation(angle):
+    """(cos, sin) that turn a vector in the cropped output into one in the source image, for a
+    tilt of `angle` degrees clockwise. Shared with the crop editor so its preview matches."""
+    t = math.radians(-angle)
+    return math.cos(t), math.sin(t)
+
+
+def apply_crop(img, crop):
+    """Apply a crop made in the visual crop editor.
+
+    crop = {'ops': flips/turns (see ORIENT_OPS), 'angle': tilt in degrees clockwise,
+            'cx', 'cy', 'cw', 'ch': centre and size of the crop as fractions of the oriented image}.
+    Fractions keep it valid at any resolution (e.g. an SVG rendered larger than its preview).
+    """
+    img = orient(img, crop.get('ops', ()))
+    w, h = img.size
+    cx, cy = crop['cx'] * w, crop['cy'] * h
+    ow = min(w, max(1, round(crop['cw'] * w)))
+    oh = min(h, max(1, round(crop['ch'] * h)))
+    angle = crop.get('angle', 0)
+    if not angle:  # a plain crop is exact and keeps every pixel untouched
+        left = min(max(round(cx - ow / 2), 0), w - ow)
+        top = min(max(round(cy - oh / 2), 0), h - oh)
+        return img.crop((left, top, left + ow, top + oh))
+    cos, sin = crop_rotation(angle)
+    data = (cos, -sin, cx - ow / 2 * cos + oh / 2 * sin,
+            sin, cos, cy - ow / 2 * sin - oh / 2 * cos)
+    return img.transform((ow, oh), Image.Transform.AFFINE, data, Image.Resampling.BICUBIC)
+
+
+def fit(img, ratio, size, crop=None):
+    if crop:
+        img = apply_crop(img, crop)
+    elif ratio:
         img = center_crop(img, ratio)
     if size:
         img.thumbnail(size, Image.Resampling.LANCZOS)
@@ -231,12 +279,12 @@ def remove_background(img):
     return remove(img, session=_bg_session).convert('RGBA')
 
 
-def convert_animation(img, dst, pil_format, ratio, size, quality):
+def convert_animation(img, dst, pil_format, ratio, size, quality, crop=None):
     """Crop/resize every frame of an animated image and save it as an animation."""
     frames, durations = [], []
     for frame in ImageSequence.Iterator(img):
         durations.append(frame.info.get('duration', 100))
-        frames.append(fit(frame.convert('RGBA'), ratio, size))
+        frames.append(fit(frame.convert('RGBA'), ratio, size, crop))
 
     save_args = {'save_all': True, 'append_images': frames[1:], 'duration': durations,
                  'loop': img.info.get('loop', 0)}
@@ -253,7 +301,7 @@ def convert_animation(img, dst, pil_format, ratio, size, quality):
 SVG_MAX_SIDE = 8192  # cap on the rendered size, so a huge target can't exhaust memory
 
 
-def open_svg(src, ratio, size):
+def open_svg(src, ratio, size, crop=None):
     """Render an SVG to a PIL image. Vectors have no fixed pixel size, so render at the size needed
     to cover the requested box (sharp, rather than upscaled later); without a size use its own."""
     try:
@@ -267,20 +315,27 @@ def open_svg(src, ratio, size):
     img = render(1)
     scale = 1.0
     if size:
-        scale = max(size[0] / img.width, size[1] / img.height)
+        w, h = img.size
+        if crop:  # the crop is only part of the image, so render big enough for that part to fill the box
+            if sum(op.startswith('rotate') for op in crop.get('ops', ())) % 2:
+                w, h = h, w
+            w, h = w * crop['cw'], h * crop['ch']
+        scale = max(size[0] / w, size[1] / h)
     scale = min(scale, SVG_MAX_SIDE / max(img.size))
     return img if abs(scale - 1) < 0.01 else render(scale)
 
 
-def convert_image(src, dst, fmt, ratio=None, size=None, quality=80, keep_metadata=False, remove_bg=False):
-    """Returns True if an animation was flattened to its first frame."""
+def convert_image(src, dst, fmt, ratio=None, size=None, quality=80, keep_metadata=False, remove_bg=False,
+                  crop=None):
+    """Returns True if an animation was flattened to its first frame.
+    crop, from the visual crop editor (see apply_crop), replaces the centre crop to ratio."""
     pil_format = IMAGE_FORMATS[fmt]
     lossless = quality == LOSSLESS
     is_svg = src.lower().endswith('.svg')
-    with (open_svg(src, ratio, size) if is_svg else Image.open(src)) as img:
+    with (open_svg(src, ratio, size, crop) if is_svg else Image.open(src)) as img:
         animated = getattr(img, 'is_animated', False)
         if animated and pil_format in ANIMATED_FORMATS:
-            convert_animation(img, dst, pil_format, ratio, size, quality)
+            convert_animation(img, dst, pil_format, ratio, size, quality, crop)
             return False
 
         img = ImageOps.exif_transpose(img)  # respect camera rotation before cropping
@@ -295,7 +350,7 @@ def convert_image(src, dst, fmt, ratio=None, size=None, quality=80, keep_metadat
         else:
             img = img.convert('RGB')
 
-        img = fit(img, ratio, size)
+        img = fit(img, ratio, size, crop)
         if remove_bg:  # after resizing: faster, and the model works at low resolution anyway
             img = remove_background(img)
 
@@ -504,6 +559,24 @@ def assign_output_names(jobs):
     return names
 
 
+def load_preview(path, max_side=2000):
+    """Open an image the way convert_image sees it before cropping (camera rotation applied, first frame
+    of an animation), shrunk to at most max_side for display. Returns (RGBA preview, full (w, h))."""
+    if path.lower().endswith('.svg'):
+        img = open_svg(path, None, None)
+        full = img.size
+    else:
+        img = Image.open(path)
+        full = img.size
+        if img.getexif().get(0x0112) in (5, 6, 7, 8):  # these EXIF orientations turn the picture sideways
+            full = full[::-1]
+        img.draft('RGB', (max_side, max_side))  # JPEGs decode much faster at reduced size
+        img = ImageOps.exif_transpose(img)
+    img = img.convert('RGBA')
+    img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+    return img, full
+
+
 def same_folder(a, b):
     """True if both paths point at the same folder (case-insensitive on Windows, follows links)."""
     return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
@@ -511,7 +584,7 @@ def same_folder(a, b):
 
 def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, ratio=None, size=None,
                    quality=80, keep_metadata=False, audio_fmt=None, split_audio_fmt=None, audio_only=False,
-                   log=tqdm.write, progress=None, cancel=None, remove_bg=False, trim=None):
+                   log=tqdm.write, progress=None, cancel=None, remove_bg=False, trim=None, crops=None):
     """Convert every image, video and/or audio file in input_folder to the given formats.
 
     With split_audio_fmt, videos are written without sound and each video's audio
@@ -525,6 +598,8 @@ def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, 
 
     remove_bg makes image backgrounds transparent (needs the rembg package). trim=(start, end) in seconds
     cuts every video, and the audio taken from it, to that range; either end may be None.
+    crops maps image file names to crops from the visual crop editor (see apply_crop); those images
+    use their own crop instead of the centre crop to ratio.
     """
     audio_only = audio_only and bool(split_audio_fmt)
     if audio_only:
@@ -603,7 +678,8 @@ def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, 
             if media == 'image':
                 if remove_bg and is_animated(src) and IMAGE_FORMATS[fmt] in ANIMATED_FORMATS:
                     log(f"{filename} is animated; background removal only works on still images, so it was left as is.")
-                if convert_image(src, dst, fmt, ratio, size, quality, keep_metadata, remove_bg):
+                if convert_image(src, dst, fmt, ratio, size, quality, keep_metadata, remove_bg,
+                                 (crops or {}).get(filename)):
                     log(f"{filename} is animated; {fmt.upper()} can't animate, so only the first frame "
                         f"was kept. Use GIF/WEBP/PNG, or convert it as a video.")
             else:
