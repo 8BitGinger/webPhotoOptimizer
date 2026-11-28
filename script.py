@@ -437,23 +437,60 @@ def build_video_filter(ratio, size, interlaced, fmt):
     return ','.join(filters)
 
 
+# Pixel formats with an alpha channel, as ffmpeg names them in its stream info
+ALPHA_PIX_FMT = re.compile(r'\b(yuva\w*|rgba\w*|bgra\w*|argb|abgr|gbrap\w*|ya8|ya16\w*)\b')
+
+# Video types that can hold transparency (MP4 can't)
+ALPHA_VIDEO_FORMATS = ('webm', 'mov', 'mkv', 'gif')
+
+
 def probe(ffmpeg, src):
-    """Return (duration in seconds or None, whether the file has an audio stream)."""
+    """Return (duration in seconds or None, whether the file has an audio stream, alpha).
+
+    alpha is None for opaque video, otherwise the extra input options ffmpeg needs to decode the
+    transparency: VP8/VP9 keep it in a side channel that only the libvpx decoders read.
+    """
     stderr = run_ffmpeg([ffmpeg, '-hide_banner', '-i', src]).stderr
     m = re.search(r'Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)', stderr)
     duration = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else None
-    return duration or None, re.search(r'Stream #\d+:\d+.*?: Audio:', stderr) is not None
+    audio_present = re.search(r'Stream #\d+:\d+.*?: Audio:', stderr) is not None
+
+    alpha = None
+    video = re.search(r'Stream #\d+:\d+.*?: Video: (\w+)(.*)', stderr)
+    if video:
+        codec, details = video.groups()
+        if codec in ('vp8', 'vp9'):
+            if re.search(r'alpha_mode\s*:\s*1', stderr):
+                alpha = ['-c:v', 'libvpx' if codec == 'vp8' else 'libvpx-vp9']
+        elif codec == 'gif':
+            # ffmpeg reports every GIF as bgra, so ask Pillow whether it really has transparent pixels
+            try:
+                with Image.open(src) as im:
+                    alpha = [] if 'transparency' in im.info else None
+            except Exception:
+                alpha = []
+        elif ALPHA_PIX_FMT.search(details):
+            alpha = []
+    return duration or None, audio_present, alpha
 
 
 def convert_video(ffmpeg, src, dst, fmt, ratio=None, size=None, quality=80, keep_metadata=False,
-                  strip_audio=False, duration=None, watch=None, trim=None):
+                  strip_audio=False, duration=None, watch=None, trim=None, alpha=None, keep_alpha=True):
+    """alpha: probe()'s alpha for the source (None = opaque). With keep_alpha the transparency is kept
+    when fmt can hold it (MP4 can't); otherwise transparent areas are flattened onto black."""
     lossless = quality == LOSSLESS
+    keep = alpha is not None and keep_alpha and fmt in ALPHA_VIDEO_FORMATS
     start, length, duration = resolve_trim(trim, duration)
     interlaced = not src.lower().endswith('.gif') and is_interlaced(ffmpeg, src, start=start)
     vf = build_video_filter(ratio, size, interlaced, fmt)
+    if alpha is not None and not keep:
+        # Just dropping alpha shows whatever colour hides under transparent pixels; premultiplying
+        # fades them to black first, the way a player would show them over a black background
+        vf = 'premultiply=inplace=1,format=' + ('rgb24,' if fmt == 'gif' else 'yuv444p,') + vf
 
     # -ss before -i seeks quickly, and since everything is re-encoded the cut is still frame-accurate
-    cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y'] + (['-ss', str(start)] if start else []) + ['-i', src]
+    cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y'] + (['-ss', str(start)] if start else [])
+    cmd += (alpha or []) + ['-i', src]
     if length:
         cmd += ['-t', str(length)]
     if fmt == 'gif':
@@ -466,7 +503,23 @@ def convert_video(ffmpeg, src, dst, fmt, ratio=None, size=None, quality=80, keep
 
     # Lossy modes map 0-100 quality onto encoder CRF (higher quality -> lower CRF).
     # Lossless modes keep the source colour format instead of forcing yuv420p.
-    if fmt in ('mp4', 'mov', 'mkv'):
+    if keep and fmt == 'mov':
+        # H.264 has no alpha. ProRes 4444 is what editors (Premiere, Resolve, Final Cut) expect for
+        # transparent MOV; lossless uses QuickTime Animation, which is exact RGBA but large.
+        if lossless:
+            cmd += ['-c:v', 'qtrle', '-pix_fmt', 'argb', '-c:a', 'alac']
+        else:
+            qscale = max(1, round((100 - quality) / 5))  # 80 -> 4 (lower = better)
+            cmd += ['-c:v', 'prores_ks', '-profile:v', '4444', '-vendor', 'apl0', '-qscale:v', str(qscale),
+                    '-pix_fmt', 'yuva444p10le', '-c:a', 'aac', '-b:a', '160k']
+    elif keep and fmt == 'mkv':
+        if lossless:  # FFV1 keeps the source colour format, alpha included
+            cmd += ['-c:v', 'ffv1', '-level', '3', '-c:a', 'flac']
+        else:
+            crf = round(50 - quality * 0.25)
+            cmd += ['-c:v', 'libvpx-vp9', '-crf', str(crf), '-b:v', '0', '-row-mt', '1',
+                    '-pix_fmt', 'yuva420p', '-c:a', 'aac', '-b:a', '160k']
+    elif fmt in ('mp4', 'mov', 'mkv'):
         if lossless:
             audio = 'flac' if fmt == 'mkv' else 'alac'
             cmd += ['-c:v', 'libx264', '-preset', 'slow', '-qp', '0', '-c:a', audio]
@@ -477,13 +530,15 @@ def convert_video(ffmpeg, src, dst, fmt, ratio=None, size=None, quality=80, keep
         if fmt in ('mp4', 'mov'):
             cmd += ['-movflags', '+faststart']
     elif fmt == 'webm':
+        # VP9 stores transparency only as yuva420p
+        alpha_fmt = ['-pix_fmt', 'yuva420p'] if keep else []
         if lossless:  # WebM only allows lossy audio, so use a high Opus bitrate
-            cmd += ['-c:v', 'libvpx-vp9', '-lossless', '1', '-row-mt', '1',
+            cmd += ['-c:v', 'libvpx-vp9', '-lossless', '1', '-row-mt', '1'] + alpha_fmt + [
                     '-c:a', 'libopus', '-b:a', '256k']
         else:
             crf = round(50 - quality * 0.25)  # 80 -> 30
-            cmd += ['-c:v', 'libvpx-vp9', '-crf', str(crf), '-b:v', '0', '-row-mt', '1',
-                    '-pix_fmt', 'yuv420p', '-c:a', 'libopus', '-b:a', '128k']
+            cmd += ['-c:v', 'libvpx-vp9', '-crf', str(crf), '-b:v', '0', '-row-mt', '1'] + (
+                    alpha_fmt or ['-pix_fmt', 'yuv420p']) + ['-c:a', 'libopus', '-b:a', '128k']
 
     if strip_audio:  # overrides the audio codec settings above
         cmd.append('-an')
@@ -584,7 +639,8 @@ def same_folder(a, b):
 
 def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, ratio=None, size=None,
                    quality=80, keep_metadata=False, audio_fmt=None, split_audio_fmt=None, audio_only=False,
-                   log=tqdm.write, progress=None, cancel=None, remove_bg=False, trim=None, crops=None):
+                   log=tqdm.write, progress=None, cancel=None, remove_bg=False, trim=None, crops=None,
+                   keep_alpha=True):
     """Convert every image, video and/or audio file in input_folder to the given formats.
 
     With split_audio_fmt, videos are written without sound and each video's audio
@@ -600,6 +656,8 @@ def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, 
     cuts every video, and the audio taken from it, to that range; either end may be None.
     crops maps image file names to crops from the visual crop editor (see apply_crop); those images
     use their own crop instead of the centre crop to ratio.
+    keep_alpha keeps the transparency of videos that have it (ProRes 4444 or Animation MOVs, WebM
+    with alpha, transparent GIFs) when the output type can hold it; MP4 can't.
     """
     audio_only = audio_only and bool(split_audio_fmt)
     if audio_only:
@@ -683,7 +741,10 @@ def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, 
                     log(f"{filename} is animated; {fmt.upper()} can't animate, so only the first frame "
                         f"was kept. Use GIF/WEBP/PNG, or convert it as a video.")
             else:
-                duration, audio_present = probe(ffmpeg, src)
+                duration, audio_present, alpha = probe(ffmpeg, src)
+                if media == 'video' and alpha is not None and keep_alpha and fmt not in ALPHA_VIDEO_FORMATS:
+                    log(f"{filename} has transparency, but {fmt.upper()} can't keep it, so it gets a black "
+                        f"background. Choose WEBM or MOV to keep it.")
                 watcher = watch if (progress or cancel) else None
                 if media == 'audio':
                     convert_audio(ffmpeg, src, dst, fmt, quality, keep_metadata, duration, watcher)
@@ -693,7 +754,8 @@ def process_folder(input_folder, output_folder, image_fmt=None, video_fmt=None, 
                     else:
                         log(f"{filename} has no audio track; no audio file was created")
                 elif convert_video(ffmpeg, src, dst, fmt, ratio, size, quality, keep_metadata,
-                                   bool(split_audio_fmt), duration, watcher, trim):
+                                   bool(split_audio_fmt), duration, watcher, trim,
+                                   alpha, keep_alpha):
                     log(f"De-interlaced {filename}")
         except Cancelled:
             if os.path.exists(dst):  # ffmpeg was killed mid-write, so the file is incomplete
@@ -838,13 +900,18 @@ def interactive():
                 except ValueError as e:
                     print(f"  {e}")
 
+    keep_alpha = True
+    if video_fmt in ALPHA_VIDEO_FORMATS:
+        keep_alpha = choose("Keep transparency in videos that have it?",
+                            [('Yes, keep it transparent', True), ('No, flatten onto black', False)])
+
     keep_metadata = choose("Keep metadata (camera info, date, GPS location, audio tags)?",
                            [('No, strip it (smaller, more private)', False), ('Yes, keep it', True)])
 
     return dict(input_folder=DEFAULT_INPUT, output_folder=DEFAULT_OUTPUT, image_fmt=image_fmt,
                 video_fmt=video_fmt, audio_fmt=audio_fmt, ratio=ratio, size=size, quality=quality,
                 keep_metadata=keep_metadata, split_audio_fmt=split_audio_fmt, audio_only=audio_only,
-                remove_bg=remove_bg, trim=trim)
+                remove_bg=remove_bg, trim=trim, keep_alpha=keep_alpha)
 
 
 def main():
@@ -891,6 +958,9 @@ def run():
                         "JPG and BMP get a white background")
     p.add_argument('--start', help="cut videos (and audio taken from them) from this time, e.g. 0:30 or 1:02:03")
     p.add_argument('--end', help="cut videos (and audio taken from them) at this time, e.g. 1:01")
+    p.add_argument('--no-alpha', action='store_true',
+                   help="flatten transparent videos onto black (by default WEBM, MOV, MKV and GIF keep "
+                        "transparency; MOV then uses ProRes 4444)")
     args = p.parse_args()
 
     valid_formats = {'image': IMAGE_FORMATS, 'video': VIDEO_FORMATS, 'audio': AUDIO_FORMATS}
@@ -938,7 +1008,7 @@ def run():
 
     process_folder(args.input, args.output, fmts.get('image'), fmts.get('video'), args.ratio, args.size,
                    args.quality, args.keep_metadata, fmts.get('audio'), split_audio_fmt, args.audio_only,
-                   remove_bg=args.remove_bg, trim=trim)
+                   remove_bg=args.remove_bg, trim=trim, keep_alpha=not args.no_alpha)
 
 
 if __name__ == '__main__':

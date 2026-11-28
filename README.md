@@ -86,7 +86,7 @@ Passing any argument switches to non-interactive mode. The default folders are t
 python script.py [-i INPUT] [-o OUTPUT] [-m {image,video,audio,both,all}] [-f FORMAT]
                  [--image-format FMT] [--video-format FMT] [--audio-format FMT]
                  [-a] [--audio-only] [-r RATIO] [-s SIZE] [-q QUALITY] [-k]
-                 [--remove-bg] [--start TIME] [--end TIME]
+                 [--remove-bg] [--start TIME] [--end TIME] [--no-alpha]
 ```
 
 | Flag | Description | Default |
@@ -107,6 +107,7 @@ python script.py [-i INPUT] [-o OUTPUT] [-m {image,video,audio,both,all}] [-f FO
 | `--remove-bg` | Make image backgrounds transparent (needs rembg) | off |
 | `--start` | Cut videos from this time: `0:30`, `1:02:03` or seconds | start of video |
 | `--end` | Cut videos at this time | end of video |
+| `--no-alpha` | Flatten transparent videos onto black instead of keeping their transparency | keep |
 
 ### Examples
 
@@ -230,6 +231,18 @@ Only files directly inside the input folder are processed (subfolders are ignore
 
 Transparent images keep their alpha channel in formats that support it (PNG, WebP, TIFF, GIF, ICO). For JPG and BMP, transparency is flattened onto a white background.
 
+Transparent videos (ProRes 4444 or QuickTime Animation MOVs, WebM with alpha, transparent GIFs) are detected automatically and keep their transparency when the output can hold it. Untick **Keep video transparency** (or pass `--no-alpha`) to flatten them onto black instead.
+
+| Output | Transparent videos are written as |
+| --- | --- |
+| WebM | VP9 with alpha |
+| MOV | ProRes 4444, or QuickTime Animation for lossless. Both are much larger than H.264, but they're what video editors expect |
+| MKV | VP9 with alpha, or FFV1 for lossless |
+| GIF | Transparent GIF (each pixel is either fully see-through or solid) |
+| MP4 | Can't hold transparency: flattened onto black, with a note in the log |
+
+Videos without transparency are encoded the same as always (H.264 for MP4/MOV/MKV).
+
 ### Metadata
 
 By default metadata such as GPS location and recording device is stripped. Use `-k` (or answer "Yes" in the menu) to keep it. Colour profiles are always preserved for images so colours don't shift (CMYK profiles are dropped, since they'd be wrong after conversion to RGB).
@@ -257,7 +270,7 @@ By default metadata such as GPS location and recording device is stripped. Use `
 ### Animated GIFs
 
 - **Image mode** keeps the animation when the output is GIF, WebP or PNG (APNG). JPG, BMP, TIFF and ICO keep only the first frame, with a warning.
-- **Video mode** picks up animated GIFs as input. MP4/WebM is usually 5–10× smaller than the GIF; embed it with `<video autoplay loop muted playsinline>`. Transparent areas become black.
+- **Video mode** picks up animated GIFs as input. MP4/WebM is usually 5–10× smaller than the GIF; embed it with `<video autoplay loop muted playsinline>`. Transparent GIFs stay transparent in WebM (and MOV/MKV/GIF); in MP4 transparent areas become black.
 
 ### Output naming
 

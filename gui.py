@@ -50,6 +50,7 @@ class App(ttk.Frame):
         self.sound = tk.StringVar(value='keep')
         self.keep_metadata = tk.BooleanVar(value=False)
         self.remove_bg = tk.BooleanVar(value=False)
+        self.keep_alpha = tk.BooleanVar(value=True)
         self.trim_start = tk.StringVar()
         self.trim_end = tk.StringVar()
 
@@ -146,8 +147,13 @@ class App(ttk.Frame):
         ttk.Label(trim_row, text='e.g. 0:30 to 1:01 (blank = start / end of video)', style='Hint.TLabel').grid(
             row=0, column=4)
 
+        self.alpha_check = ttk.Checkbutton(
+            opts, text='Keep video transparency (WEBM, MOV, MKV, GIF; MP4 gets black; MOV becomes ProRes 4444)',
+            variable=self.keep_alpha)
+        self.alpha_check.grid(row=6, column=0, columnspan=4, sticky='w', pady=(6, 0))
+
         ttk.Checkbutton(opts, text='Keep metadata (camera info, date, GPS location, audio tags)',
-                        variable=self.keep_metadata).grid(row=6, column=0, columnspan=4, sticky='w', pady=(6, 0))
+                        variable=self.keep_metadata).grid(row=7, column=0, columnspan=4, sticky='w', pady=(6, 0))
 
         # Run controls
         controls = ttk.Frame(self)
@@ -218,6 +224,7 @@ class App(ttk.Frame):
             enable(entry, visual and combo.get() == 'Custom...')
 
         self.bg_check.configure(state='normal' if image_fmt else 'disabled')
+        self.alpha_check.configure(state='normal' if video_fmt in script.ALPHA_VIDEO_FORMATS else 'disabled')
         self.visual_btn.configure(state='normal' if image_fmt else 'disabled')
         self.clear_crops_btn.configure(state='normal' if image_fmt and self.crops else 'disabled')
         n = len(self.crops)
@@ -265,7 +272,7 @@ class App(ttk.Frame):
                     image_fmt=image_fmt, video_fmt=video_fmt, audio_fmt=audio_fmt, ratio=ratio, size=size,
                     quality=quality, keep_metadata=self.keep_metadata.get(), split_audio_fmt=split_fmt,
                     audio_only=audio_only, remove_bg=bool(image_fmt) and self.remove_bg.get(), trim=trim,
-                    crops=crops)
+                    crops=crops, keep_alpha=self.keep_alpha.get())
 
     # ---------- actions ----------
 
